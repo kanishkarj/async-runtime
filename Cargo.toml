@@ -1,0 +1,15 @@
+[package]
+name = "async_executor"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libc = "0.2"
+futures = { version = "0.3", features = ["thread-pool"] }
+lazy_static = "1.4"
+dashmap = "4.0.2"
+
+[[example]]
+name = "test"
