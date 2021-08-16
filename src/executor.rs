@@ -12,7 +12,7 @@ use futures::Future;
 use crate::reactor::Reactor;
 
 lazy_static! {
-    pub static ref RUNTIME: Reactor = Reactor::new(1024, 4, 100);
+    pub static ref RUNTIME: Reactor = Reactor::new(1024, 2, 100);
 }
 
 use {
@@ -23,7 +23,7 @@ use {
     std::sync::mpsc::{sync_channel, Receiver, SyncSender},
 };
 
-const num_threads: usize = 3;
+const num_threads: usize = 4;
 
 pub struct Executor {
     task_receiver: Vec<Receiver<Arc<Task>>>,

@@ -43,6 +43,7 @@ impl MyTcpListener {
     pub fn bind(addr: &str) -> Self {
         let listener = TcpListener::bind(addr).unwrap();
         listener.set_nonblocking(true).unwrap();
+        RUNTIME.register_interest(crate::reactor::EPOLL_KEY, listener.as_raw_fd());
         println!("bound to {:?}", addr);
         Self { listener }
     }

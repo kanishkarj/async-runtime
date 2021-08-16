@@ -16,18 +16,16 @@ content-length: 5
 HELLO";
 
 fn main() {
-    let listener = MyTcpListener::bind("127.0.0.1:8000");
-
-    RUNTIME.run(&listener);
+    RUNTIME.run();
 
     let (mut executor, spawner) = new_executor_and_spawner();
 
     // Run the executor until the task queue is empty.
     // This will print "howdy!", pause, and then print "done!".
-    let listener = listener.clone();
     // Spawn a task to print before and after waiting on a timer.
     spawner.clone().spawn((|| async move {
         loop {
+            let listener = MyTcpListener::bind("127.0.0.1:8000");
             match listener.maccept().await {
                 Ok(val) => {
                     // println!("got tcp stream");

@@ -184,7 +184,7 @@ impl Reactor {
         }
     }
 
-    pub fn run(&'static self, listener: &MyTcpListener) -> Result<(), io::Error> {
+    pub fn run(&'static self) -> Result<(), io::Error> {
         // let listener = TcpListener::bind("127.0.0.1:8000")?;
         let handles: Vec<JoinHandle<io::Result<()>>> = (0..self.worker_threads)
             .into_iter()
@@ -194,13 +194,13 @@ impl Reactor {
                 let epoll_wait_time = self.epoll_wait_time;
                 let readers = &self.reader_waker;
                 let writers = &self.writer_waker;
-                let listener = listener.try_clone().unwrap();
+                // let listener = listener.try_clone().unwrap();
                 thread::spawn(move || -> io::Result<()> {
-                    listener.set_nonblocking(true);
-                    let listener_fd = listener.as_raw_fd();
-                    let mut request_contexts: HashMap<u64, RequestContext> = HashMap::new();
+                    // listener.set_nonblocking(true);
+                    // let listener_fd = listener.as_raw_fd();
+                    // let mut request_contexts: HashMap<u64, RequestContext> = HashMap::new();
                     let epoll_fd = self.epoll_fd;
-                    add_interest(epoll_fd, listener_fd, listener_read_event(EPOLL_KEY));
+                    // add_interest(epoll_fd, listener_fd, listener_read_event(EPOLL_KEY));
 
                     let mut events: Vec<libc::epoll_event> = Vec::with_capacity(epoll_buffer_size);
 
@@ -309,6 +309,10 @@ impl Reactor {
         self.streams.insert(key, strm.try_clone().unwrap());
         println!("registered stream {}", key);
         add_interest(self.epoll_fd, strm.as_raw_fd(), listener_read_event(key));
+    }
+    pub fn register_interest(&self, key: u64, fd: RawFd) {
+        println!("registered interest {}", key);
+        add_interest(self.epoll_fd, fd, listener_read_event(key));
     }
     pub fn register_waker_read(&self, key: u64, w: Waker) {
         self.reader_waker.entry(key).or_insert(vec![]).push(w);
