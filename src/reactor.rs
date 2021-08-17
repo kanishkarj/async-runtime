@@ -1,4 +1,4 @@
-use dashmap::DashMap;
+use dashmap::{DashMap, Map};
 use std::io::prelude::*;
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -163,8 +163,8 @@ pub struct Reactor {
     worker_threads: usize,
     epoll_buffer_size: usize,
     epoll_wait_time: i32,
-    reader_waker: DashMap<u64, Vec<std::task::Waker>>,
-    writer_waker: DashMap<u64, Vec<std::task::Waker>>,
+    reader_waker: DashMap<u64, std::task::Waker>,
+    writer_waker: DashMap<u64, std::task::Waker>,
     streams: DashMap<u64, TcpStream>,
     epoll_fd: i32,
     key: AtomicU64,
@@ -180,7 +180,7 @@ impl Reactor {
             writer_waker: DashMap::new(),
             streams: DashMap::new(),
             epoll_fd: epoll_create().expect("can create epoll queue"),
-            key: AtomicU64::new(EPOLL_KEY),
+            key: AtomicU64::new(EPOLL_KEY + 1),
         }
     }
 
@@ -257,23 +257,14 @@ impl Reactor {
                                 // context.close(epoll_fd);
                                 self.close(key);
                             } else {
-                                readers
-                                    .entry(key)
-                                    .or_insert_with(|| vec![])
-                                    .drain(..)
-                                    .into_iter()
-                                    .for_each(|w| {
-                                        w.wake();
-                                    });
-
-                                writers
-                                    .entry(key)
-                                    .or_insert_with(|| vec![])
-                                    .drain(..)
-                                    .into_iter()
-                                    .for_each(|w| {
-                                        w.wake();
-                                    });
+                                readers.remove(&key).map(|(_, w)| {
+                                    w.wake();
+                                    Some(())
+                                });
+                                writers.remove(&key).map(|(_, w)| {
+                                    w.wake();
+                                    Some(())
+                                });
                                 // println!("read key: {} {}", v, key);
                                 // context.read_cb(key, epoll_fd);
                                 // context.write_cb(key, epoll_fd);
@@ -307,19 +298,19 @@ impl Reactor {
     }
     pub fn register_stream_read(&self, key: u64, strm: &TcpStream) {
         self.streams.insert(key, strm.try_clone().unwrap());
-        println!("registered stream {}", key);
+        // println!("registered stream {}", key);
         add_interest(self.epoll_fd, strm.as_raw_fd(), listener_read_event(key));
     }
     pub fn register_interest(&self, key: u64, fd: RawFd) {
-        println!("registered interest {}", key);
+        // println!("registered interest {}", key);
         add_interest(self.epoll_fd, fd, listener_read_event(key));
     }
     pub fn register_waker_read(&self, key: u64, w: Waker) {
-        self.reader_waker.entry(key).or_insert(vec![]).push(w);
+        self.reader_waker.insert(key, w);
     }
 
     pub fn register_waker_write(&self, key: u64, w: Waker) {
-        self.writer_waker.entry(key).or_insert(vec![]).push(w);
+        self.writer_waker.insert(key, w);
     }
     pub fn get_next_key(&self) -> u64 {
         self.key.fetch_add(1, Ordering::SeqCst)

@@ -24,8 +24,8 @@ fn main() {
     // This will print "howdy!", pause, and then print "done!".
     // Spawn a task to print before and after waiting on a timer.
     spawner.clone().spawn((|| async move {
+        let listener = MyTcpListener::bind("127.0.0.1:8000");
         loop {
-            let listener = MyTcpListener::bind("127.0.0.1:8000");
             match listener.maccept().await {
                 Ok(val) => {
                     // println!("got tcp stream");
