@@ -1,3 +1,5 @@
+use crossbeam_deque::{Injector, Stealer, Worker};
+use futures::Future;
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -6,8 +8,6 @@ use std::{
     task::{Context, Poll},
     thread,
 };
-
-use futures::Future;
 
 use crate::reactor::Reactor;
 
@@ -23,16 +23,18 @@ use {
     std::sync::mpsc::{sync_channel, Receiver, SyncSender},
 };
 
-const num_threads: usize = 4;
+const num_threads: usize = 5;
 
 pub struct Executor {
-    task_receiver: Vec<Receiver<Arc<Task>>>,
+    task_receiver: Vec<Worker<Arc<Task>>>,
+    task_stealer: Vec<Stealer<Arc<Task>>>,
+    global: Arc<Injector<Arc<Task>>>,
 }
 
 /// `Spawner` spawns new futures onto the task channel.
 #[derive(Clone)]
 pub struct Spawner {
-    task_sender: Vec<SyncSender<Arc<Task>>>,
+    task_sender: Arc<Injector<Arc<Task>>>,
 }
 
 static curr_worker: AtomicUsize = AtomicUsize::new(0);
@@ -49,7 +51,7 @@ struct Task {
     future: Mutex<Option<BoxFuture<'static, ()>>>,
 
     /// Handle to place the task itself back onto the task queue.
-    task_sender: SyncSender<Arc<Task>>,
+    task_sender: Arc<Injector<Arc<Task>>>,
 }
 
 pub fn new_executor_and_spawner() -> (Executor, Spawner) {
@@ -58,14 +60,23 @@ pub fn new_executor_and_spawner() -> (Executor, Spawner) {
     // a real executor.
     const MAX_QUEUED_TASKS: usize = 10_000;
 
-    let mut task_receiver: Vec<Receiver<Arc<Task>>> = vec![];
-    let mut task_sender: Vec<SyncSender<Arc<Task>>> = vec![];
+    let task_sender = Arc::new(Injector::<Arc<Task>>::new());
+    let mut task_receiver: Vec<Worker<Arc<Task>>> = vec![];
+    let mut task_stealer: Vec<Stealer<Arc<Task>>> = vec![];
     for _ in 0..num_threads {
-        let (sender, receiver) = sync_channel(MAX_QUEUED_TASKS);
-        task_receiver.push(receiver);
-        task_sender.push(sender);
+        //     let (sender, receiver) = sync_channel(MAX_QUEUED_TASKS);
+        let worker = Worker::new_lifo();
+        task_stealer.push(worker.stealer());
+        task_receiver.push(worker);
     }
-    (Executor { task_receiver }, Spawner { task_sender })
+    (
+        Executor {
+            task_receiver,
+            task_stealer,
+            global: task_sender.clone(),
+        },
+        Spawner { task_sender },
+    )
 }
 // ANCHOR_END: executor_decl
 
@@ -77,11 +88,9 @@ impl Spawner {
         let curr = curr_worker.fetch_add(1, Ordering::Relaxed) % num_threads;
         let task = Arc::new(Task {
             future: Mutex::new(Some(future)),
-            task_sender: self.task_sender[curr].clone(),
+            task_sender: self.task_sender.clone(),
         });
-        self.task_sender[curr]
-            .send(task)
-            .expect("too many tasks queued");
+        self.task_sender.push(task);
     }
 }
 // ANCHOR_END: spawn_fn
@@ -92,10 +101,7 @@ impl ArcWake for Task {
         // Implement `wake` by sending this task back onto the task channel
         // so that it will be polled again by the executor.
         let cloned = arc_self.clone();
-        arc_self
-            .task_sender
-            .send(cloned)
-            .expect("too many tasks queued");
+        arc_self.task_sender.push(cloned);
     }
 }
 // ANCHOR_END: arcwake_for_task
@@ -103,34 +109,53 @@ impl ArcWake for Task {
 // ANCHOR: executor_run
 impl Executor {
     pub fn run(self) {
+        let global = self.global.clone();
+        let task_stealer = self.task_stealer;
         for ready_queue in self.task_receiver {
+            let global = global.clone();
+            let task_stealer = task_stealer.clone();
             thread::spawn(move || {
-                while let Ok(task) = ready_queue.recv() {
-                    let mut future_slot = task.future.lock().unwrap();
-                    if let Some(mut future) = future_slot.take() {
-                        // Create a `LocalWaker` from the task itself
-                        let waker = waker_ref(&task);
-                        let context = &mut Context::from_waker(&*waker);
-                        // `BoxFuture<T>` is a type alias for
-                        // `Pin<Box<dyn Future<Output = T> + Send + 'static>>`.
-                        // We can get a `Pin<&mut dyn Future + Send + 'static>`
-                        // from it by calling the `Pin::as_mut` method.
-                        if let Poll::Pending = future.as_mut().poll(context) {
-                            // We're not done processing the future, so put it
-                            // back in its task to be run again in the future.
-                            *future_slot = Some(future);
+                loop {
+                    if let Some(task) = find_task(&ready_queue, &global, &task_stealer) {
+                        let mut future_slot = task.future.lock().unwrap();
+                        if let Some(mut future) = future_slot.take() {
+                            // Create a `LocalWaker` from the task itself
+                            let waker = waker_ref(&task);
+                            let context = &mut Context::from_waker(&*waker);
+                            // `BoxFuture<T>` is a type alias for
+                            // `Pin<Box<dyn Future<Output = T> + Send + 'static>>`.
+                            // We can get a `Pin<&mut dyn Future + Send + 'static>`
+                            // from it by calling the `Pin::as_mut` method.
+                            if let Poll::Pending = future.as_mut().poll(context) {
+                                // We're not done processing the future, so put it
+                                // back in its task to be run again in the future.
+                                *future_slot = Some(future);
+                            }
                         }
+                    } else {
+                        thread::sleep(core::time::Duration::from_millis(5));
                     }
                 }
             });
         }
-        // while let Ok(task) = self.ready_queue.recv() {
-        // Take the future, and if it has not yet completed (is still Some),
-        // poll it in an attempt to complete it.
-
-        // }
-        // FIX me
-        // std::thread::park();
         loop {}
     }
+}
+
+fn find_task<T>(local: &Worker<T>, global: &Injector<T>, stealers: &[Stealer<T>]) -> Option<T> {
+    // Pop a task from the local queue, if not empty.
+    local.pop().or_else(|| {
+        // Otherwise, we need to look for a task elsewhere.
+        std::iter::repeat_with(|| {
+            // Try stealing a batch of tasks from the global queue.
+            global
+                .steal_batch_and_pop(local)
+                // Or try stealing a task from one of the other threads.
+                .or_else(|| stealers.iter().map(|s| s.steal()).collect())
+        })
+        // Loop while no task was stolen and any steal operation needs to be retried.
+        .find(|s| !s.is_retry())
+        // Extract the stolen task, if there is one.
+        .and_then(|s| s.success())
+    })
 }

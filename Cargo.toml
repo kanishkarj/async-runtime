@@ -10,6 +10,9 @@ libc = "0.2"
 futures = { version = "0.3", features = ["thread-pool"] }
 lazy_static = "1.4"
 dashmap = "4.0.2"
+crossbeam-deque = "0.8"
+log = "0.4"
+env_logger = "0.8.4"
 
 [[example]]
 name = "test"

@@ -1,4 +1,6 @@
+use crate::futures::MyTcpListener;
 use dashmap::{DashMap, Map};
+use log::{info, trace, warn};
 use std::io::prelude::*;
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -7,8 +9,6 @@ use std::task::Waker;
 use std::thread;
 use std::thread::JoinHandle;
 use std::{collections::HashMap, io};
-
-use crate::futures::MyTcpListener;
 const HTTP_RESP: &[u8] = b"HTTP/1.1 200 OK
 content-type: text/html
 content-length: 5
@@ -30,6 +30,7 @@ pub const EPOLL_KEY: u64 = 100;
 const READ_FLAGS: i32 = libc::EPOLLET
     | libc::EPOLLEXCLUSIVE
     | libc::EPOLLIN
+    | libc::EPOLLOUT
     | libc::EPOLLERR
     | libc::EPOLLHUP
     | (1 << 28);
@@ -253,7 +254,7 @@ impl Reactor {
                             if (v as i32 & libc::EPOLLHUP == libc::EPOLLHUP)
                                 || (v as i32 & libc::EPOLLERR == libc::EPOLLERR)
                             {
-                                // println!("closing key: {} {}", epoll_fd, key);
+                                info!("closing key: {} {}", epoll_fd, key);
                                 // context.close(epoll_fd);
                                 self.close(key);
                             } else {
@@ -262,10 +263,11 @@ impl Reactor {
                                     Some(())
                                 });
                                 writers.remove(&key).map(|(_, w)| {
+                                    info!("writing to key: {} {}", epoll_fd, key);
                                     w.wake();
                                     Some(())
                                 });
-                                // println!("read key: {} {}", v, key);
+                                // // println!("read key: {} {}", v, key);
                                 // context.read_cb(key, epoll_fd);
                                 // context.write_cb(key, epoll_fd);
                             }
